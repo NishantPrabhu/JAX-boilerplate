@@ -2,10 +2,13 @@
 # This script will contain the function called by the accelerator for distributed training
 # Meant for use with TPUs as of now
 
+import os
 import jax
 import jmp
+import tree
 import optax
 import wandb
+import pickle
 import argparse
 import networks
 import functools
@@ -23,8 +26,8 @@ class TrainState(NamedTuple):
     opt_state: optax.OptState
 
 def _forward_pass(model, batch, input_keys, is_training):
-    input_vals = [batch[key] for key in input_keys]
-    return model(*input_vals, is_training=is_training)
+    inputs = batch["img"]
+    return model(inputs, is_training=is_training)
 
 def initialize_network(rng, fwd_func, optimizer, batch):
     params, state = fwd_func.init(rng, batch, is_training=True)
@@ -49,8 +52,33 @@ def train_step(train_state, batch, loss_fn, optimizer):
 def eval_step(fwd_func, params, state, batch):
     logits, _ = fwd_func.apply(params, state, None, batch, is_training=False)
     preds = jnp.argmax(logits, axis=-1)
-    eval_metrics = compute_metrics(preds, batch["labels"])                                      # TODO: Metrics computation
-    return eval_metrics
+    accuracy = jnp.mean(jnp.equal(preds, batch["label"]))
+    return {"accuracy": accuracy}
+
+def cross_entropy(params, state, fwd_func, batch, num_classes=10, weight_decay=1e-06, smoothing=None):
+    logits, state = fwd_func.apply(params, state, None, batch, is_training=True)
+    labels = jax.nn.one_hot(batch["label"], num_classes)
+    if isinstance(smoothing, float) and (0 <= smoothing <= 1):
+        labels = optax.smooth_labels(labels, smoothing)
+    loss = optax.softmax_cross_entropy(logits=logits, labels=labels).mean()
+
+    # L2 regularization on weights (all except batch_norms)
+    param_list = [p for ((mod_name, _), p) in tree.flatten_with_path(params) if "batch_norm" not in mod_name]
+    l2_regularization = 0.5 * sum(jnp.sum(jnp.square(p)) for p in params)
+    loss = loss + weight_decay * l2_regularization
+    return loss, (loss, state)
+
+def save_checkpoint(output_dir, rng, epoch, train_state):
+    state = {"rng_key": rng, "epoch": epoch, "train_state": train_state}
+    with open(os.path.join(output_dir, "best_model.ckpt")) as f:
+        pickle.dump(state, f)
+
+def load_checkpoint(ckpt_dir):
+    assert os.path.exists(os.path.join(ckpt_dir, "best_model.ckpt")), f"Could not find checkpoint at {ckpt_dir}"
+    with open(os.path.join(ckpt_dir, "best_model.ckpt")) as f:
+        state = pickle.load(f)
+    return state["rng_key"], state["epoch"], state["train_state"]
+
 
 def train():
     # Get CLI arguments
@@ -63,6 +91,8 @@ def train():
 
     device_count = jax.local_device_count()
     fwd_func = hk.transform_with_state(_forward_pass)
+    global_train_step = 0
+    start_epoch = 1
 
     # Datasets and loaders
     train_dset, test_dset = data_utils.prepare_standard_dataset(name=config["data"]["name"], transforms=config["data"]["transforms"])
@@ -76,8 +106,10 @@ def train():
     lr_schedule = optim_utils.get_scheduler(**config["scheduler"])
     optimizer = optim_utils.get_optimizer(name=config["optim"].pop("name"), learning_rate=lr_schedule, **config["optim"])
     train_state = jax.pmap(initialize_network)(rng, fwd_func, optimizer, batch)
-    loss_fn = None
     ckpt_metric, best_metric_val = config["checkpoint"]["metric"], config["checkpoint"]["worst_value"]
+
+    if args["load"] is not None:
+        rng, start_epoch, train_state = load_checkpoint(args["load"])
 
     # Summary and wandb
     run = wandb.init(project=config["wandb"]["project"])
@@ -87,13 +119,14 @@ def train():
         logger.record(line, mode="info")
 
     # Begin training/evaluation loop
-    for epoch in range(1, config["epochs"]):
+    for epoch in range(start_epoch, config["epochs"]+1):
         desc = "[TRAIN] Epoch {:4d}/{:4d}".format(epoch, config["epochs"])
         avg_meter = expt_utils.AverageMeter()
 
         for step, batch in enumerate(train_loader):
-            train_state, metrics = train_step(train_state, batch, loss_fn, optimizer)
+            train_state, metrics = train_step(train_state, batch, cross_entropy, optimizer)
             avg_meter.add(metrics)
+            global_train_step += 1
             if (step+1) % config["log_every"] == 0 and (config["log_every"] > 0):
                 expt_utils.progress_bar(progress=(step+1)/len(train_loader), desc=desc, status=avg_meter.return_msg())
                 wandb.log({"Train loss": metrics["loss"], "Step": step+1})
@@ -120,6 +153,6 @@ def train():
 
             if val_metrics.get(ckpt_metric) > best_metric_val:
                 best_metric_val == val_metrics.get(ckpt_metric)
-                # TODO Checkpointing mechanism
+                save_checkpoint(output_dir, rng, epoch, train_state)
     print()
     logger.record("Training complete!", mode="info")
