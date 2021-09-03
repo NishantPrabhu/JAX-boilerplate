@@ -61,15 +61,17 @@ def cross_entropy(params, state, fwd_func, batch, num_classes=10, weight_decay=1
     if isinstance(smoothing, float) and (0 <= smoothing <= 1):
         labels = optax.smooth_labels(labels, smoothing)
     loss = optax.softmax_cross_entropy(logits=logits, labels=labels).mean()
+    preds = jnp.argmax(logits, axis=-1)
+    metrics = {"accuracy": jnp.mean(jnp.equal(preds, batch["label"]))}
 
     # L2 regularization on weights (all except batch_norms)
     param_list = [p for ((mod_name, _), p) in tree.flatten_with_path(params) if "batch_norm" not in mod_name]
     l2_regularization = 0.5 * sum(jnp.sum(jnp.square(p)) for p in params)
     loss = loss + weight_decay * l2_regularization
-    return loss, (loss, state)
+    return loss, (loss, metrics, state)
 
-def save_checkpoint(output_dir, rng, epoch, train_state):
-    state = {"rng_key": rng, "epoch": epoch, "train_state": train_state}
+def save_checkpoint(output_dir, rng, global_step, train_state):
+    state = {"rng_key": rng, "global_step": global_step, "train_state": train_state}
     with open(os.path.join(output_dir, "best_model.ckpt")) as f:
         pickle.dump(state, f)
 
@@ -77,7 +79,7 @@ def load_checkpoint(ckpt_dir):
     assert os.path.exists(os.path.join(ckpt_dir, "best_model.ckpt")), f"Could not find checkpoint at {ckpt_dir}"
     with open(os.path.join(ckpt_dir, "best_model.ckpt")) as f:
         state = pickle.load(f)
-    return state["rng_key"], state["epoch"], state["train_state"]
+    return state["rng_key"], state["global_step"], state["train_state"]
 
 
 def train():
@@ -92,7 +94,6 @@ def train():
     device_count = jax.local_device_count()
     fwd_func = hk.transform_with_state(_forward_pass)
     global_train_step = 0
-    start_epoch = 1
 
     # Datasets and loaders
     train_dset, test_dset = data_utils.prepare_standard_dataset(name=config["data"]["name"], transforms=config["data"]["transforms"])
@@ -109,7 +110,7 @@ def train():
     ckpt_metric, best_metric_val = config["checkpoint"]["metric"], config["checkpoint"]["worst_value"]
 
     if args["load"] is not None:
-        rng, start_epoch, train_state = load_checkpoint(args["load"])
+        rng, global_train_step, train_state = load_checkpoint(args["load"])
 
     # Summary and wandb
     run = wandb.init(project=config["wandb"]["project"])
@@ -119,7 +120,7 @@ def train():
         logger.record(line, mode="info")
 
     # Begin training/evaluation loop
-    for epoch in range(start_epoch, config["epochs"]+1):
+    for epoch in range(1, config["epochs"]+1):
         desc = "[TRAIN] Epoch {:4d}/{:4d}".format(epoch, config["epochs"])
         avg_meter = expt_utils.AverageMeter()
 
