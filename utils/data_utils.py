@@ -32,10 +32,11 @@ class _RepeatSampler(object):
         while True:
             yield from iter(self.sampler)
 
-def prepare_standard_dataset(name, split, transforms, download_root="./"):
+def prepare_standard_dataset(name, transforms, download_root=None):
+    root = f"data/{name}" if download_root is None else download_root
     assert name in DATASETS.keys(), f"Only {list(DATASETS.keys())} are available as of now"
-    train_dset = DATASETS.get(name)(root=download_root, train=True, transform=get_transform(transforms["train"]), download=True)
-    test_dset = DATASETS.get(name)(root=download_root, train=False, transform=get_transform(transforms["test"]), download=True)
+    train_dset = DATASETS.get(name)(root=root, train=True, transform=get_transform(transforms["train"]), download=True)
+    test_dset = DATASETS.get(name)(root=root, train=False, transform=get_transform(transforms["test"]), download=True)
     return train_dset, test_dset
 
 def get_multi_epoch_loaders(train_dset, test_dset, batch_size, num_workers):
