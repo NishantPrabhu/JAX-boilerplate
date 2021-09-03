@@ -35,9 +35,9 @@ def initialize_network(rng, fwd_func, optimizer, batch):
     return TrainState(params=params, state=state, opt_state=opt_state)
 
 @functools.partial(jax.pmap, axis_name="i", donate_args=(0,))
-def train_step(train_state, batch, loss_fn, optimizer):
+def train_step(train_state, batch, fwd_func, loss_fn, optimizer, **loss_fn_kwargs):
     params, state, opt_state = train_state
-    grads, (loss, metrics, new_state) = jax.grad(loss_fn, has_aux=True)(params, state, batch)
+    grads, (loss, metrics, new_state) = jax.grad(loss_fn, has_aux=True)(params, state, fwd_func, batch, **loss_fn_kwargs)
     grads = jax.lax.pmean(grads, axis_name="i")
     updates, new_opt_state = optimizer.update(grads, opt_state)
     new_params = optax.apply_updates(params, updates)
@@ -124,7 +124,7 @@ def train():
         avg_meter = expt_utils.AverageMeter()
 
         for step, batch in enumerate(train_loader):
-            train_state, metrics = train_step(train_state, batch, cross_entropy, optimizer)
+            train_state, metrics = train_step(train_state, batch, fwd_func, cross_entropy, optimizer, **config["loss_fn"])
             avg_meter.add(metrics)
             global_train_step += 1
             if (step+1) % config["log_every"] == 0 and (config["log_every"] > 0):
