@@ -2,7 +2,7 @@
 import torch
 import jax.numpy as jnp
 from torchvision import datasets
-from vision_augs import get_transform
+from .vision_augs import get_transform
 from torch.utils.data import Dataset, DataLoader
 
 DATASETS = {

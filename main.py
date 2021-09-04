@@ -21,20 +21,21 @@ from utils import data_utils, optim_utils, expt_utils
 
 
 class TrainState(NamedTuple):
-    params: hk.params
+    params: hk.Params
     state: hk.State
     opt_state: optax.OptState
 
-def _forward_pass(model, batch, is_training):
+def _forward_pass(batch, is_training):
     inputs = batch["img"]
-    return model(inputs, is_training=is_training)
+    net = networks.resnet.resnet18(reduce_first_conv=True)
+    return net(inputs, is_training=is_training)
 
-def initialize_network(rng, fwd_func, optimizer, batch):
+def initialize_network(rng, batch, fwd_func, optimizer):
     params, state = fwd_func.init(rng, batch, is_training=True)
     opt_state = optimizer.init(params)
     return TrainState(params=params, state=state, opt_state=opt_state)
 
-@functools.partial(jax.pmap, axis_name="i", donate_args=(0,))
+@functools.partial(jax.pmap, axis_name="i", donate_argnums=(0,))
 def train_step(train_state, batch, fwd_func, loss_fn, optimizer, **loss_fn_kwargs):
     params, state, opt_state = train_state
     grads, (loss, metrics, new_state) = jax.grad(loss_fn, has_aux=True)(params, state, fwd_func, batch, **loss_fn_kwargs)
@@ -96,12 +97,12 @@ def train(args):
     # Model, optimizer, loss function
     rng = jax.random.PRNGKey(420)
     rng = jnp.broadcast_to(rng, (device_count,) + rng.shape)
-    batch = next(train_loader)
+    batch = next(iter(train_loader))
 
     lr_schedule = optim_utils.get_scheduler(name=config["scheduler"].pop("name"), epochs=config["epochs"], warmup_epochs=config.get("warmup_epochs", 0),
                                             steps_per_epoch=len(train_loader), **config["scheduler"])
     optimizer = optim_utils.get_optimizer(name=config["optim"].pop("name"), learning_rate=lr_schedule, **config["optim"])
-    train_state = jax.pmap(initialize_network)(rng, fwd_func, optimizer, batch)
+    train_state = jax.pmap(initialize_network)(rng, batch, fwd_func, optimizer)
     ckpt_metric, best_metric_val = config["checkpoint"]["metric"], config["checkpoint"]["worst_value"]
 
     if args["load"] is not None:
