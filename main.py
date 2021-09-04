@@ -25,7 +25,7 @@ class TrainState(NamedTuple):
     state: hk.State
     opt_state: optax.OptState
 
-def _forward_pass(model, batch, input_keys, is_training):
+def _forward_pass(model, batch, is_training):
     inputs = batch["img"]
     return model(inputs, is_training=is_training)
 
@@ -82,13 +82,7 @@ def load_checkpoint(ckpt_dir):
     return state["rng_key"], state["global_step"], state["train_state"]
 
 
-def train():
-    # Get CLI arguments
-    ap = argparse.ArgumentParser()
-    ap.add_argument("-c", "--config", type=str, required=True, help="Path to configuration file")
-    ap.add_argument("-o", "--output", type=str, default=dt.now().strftime("%d-%m-%Y_%H-%M"), help="Name of output directory")
-    ap.add_argument("-l", "--load", type=str, default=None, help="Path to directory from which best model is to be loaded")
-    args = vars(ap.parse_args())
+def train(args):
     config, output_dir, logger = expt_utils.initialize_experiment(args, output_root="./outputs/test", seed=420)
 
     device_count = jax.local_device_count()
@@ -104,7 +98,8 @@ def train():
     rng = jnp.broadcast_to(rng, (device_count,) + rng.shape)
     batch = next(train_loader)
 
-    lr_schedule = optim_utils.get_scheduler(**config["scheduler"])
+    lr_schedule = optim_utils.get_scheduler(name=config["scheduler"].pop("name"), epochs=config["epochs"], warmup_epochs=config.get("warmup_epochs", 0),
+                                            steps_per_epoch=len(train_loader), **config["scheduler"])
     optimizer = optim_utils.get_optimizer(name=config["optim"].pop("name"), learning_rate=lr_schedule, **config["optim"])
     train_state = jax.pmap(initialize_network)(rng, fwd_func, optimizer, batch)
     ckpt_metric, best_metric_val = config["checkpoint"]["metric"], config["checkpoint"]["worst_value"]
@@ -154,6 +149,19 @@ def train():
 
             if val_metrics.get(ckpt_metric) > best_metric_val:
                 best_metric_val == val_metrics.get(ckpt_metric)
-                save_checkpoint(output_dir, rng, epoch, train_state)
+                save_checkpoint(output_dir, rng, global_train_step, train_state)
     print()
     logger.record("Training complete!", mode="info")
+
+
+if __name__ == "__main__":
+
+    # Get CLI arguments
+    ap = argparse.ArgumentParser()
+    ap.add_argument("-c", "--config", type=str, required=True, help="Path to configuration file")
+    ap.add_argument("-o", "--output", type=str, default=dt.now().strftime("%d-%m-%Y_%H-%M"), help="Name of output directory")
+    ap.add_argument("-l", "--load", type=str, default=None, help="Path to directory from which best model is to be loaded")
+    args = vars(ap.parse_args())
+
+    # Run trainer
+    train(args)

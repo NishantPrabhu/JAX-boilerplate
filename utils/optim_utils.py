@@ -40,7 +40,14 @@ def get_optimizer(name, learning_rate, **kwargs):
     optimizer = OPTIMIZERS[name](learning_rate=learning_rate, **kwargs)
     return optimizer
 
-def get_scheduler(name, **kwargs):
+def get_scheduler(name, epochs, warmup_epochs, steps_per_epoch, **kwargs):
     assert name in SCHEDULERS.keys(), f"Invalid scheduler {name}, should be one of {list(SCHEDULERS.keys())}"
-    lr_scheduler = SCHEDULERS[name](**kwargs)
+    if name in ["constant", "multistep"]:
+        lr_scheduler = SCHEDULERS[name](**kwargs)
+    elif name == "cosine":
+        lr_scheduler = SCHEDULERS[name](decay_steps=epochs*steps_per_epoch, **kwargs)
+    elif name == "warmup_cosine":
+        warmup_steps = warmup_epochs * steps_per_epoch
+        decay_steps = (epochs - warmup_epochs) * steps_per_epoch
+        lr_scheduler = SCHEDULERS[name](warmup_steps=warmup_steps, decay_steps=decay_steps, **kwargs)
     return lr_scheduler
