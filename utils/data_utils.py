@@ -1,4 +1,5 @@
 
+import jax
 import torch
 import numpy as np
 import jax.numpy as jnp
@@ -7,19 +8,23 @@ from torch.utils.data import Dataset, DataLoader
 
 
 def jax_collate(batch):
+    local_device_count = jax.local_device_count()
+    
     if isinstance(batch[0], jnp.ndarray):
-        return jnp.stack(batch)
+        h, w, c = batch[0].shape
+        return jnp.stack(batch).reshape(local_device_count, -1, h, w, c)
     elif isinstance(batch[0], (tuple, list)):
         transposed = zip(*batch)
         return [jax_collate(samples) for samples in transposed]
     else:
-        return jnp.array(batch)
+        return jnp.array(batch).reshape(local_device_count, -1)
     
     
 class DataTransform:
     
     def __init__(self, transform=None):
         self.transform = transform
+        self.num_devices = jax.local_device_count()
     
     def __call__(self, img):
         img = self.transform(img).permute(1, 2, 0).numpy()

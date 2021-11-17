@@ -1,4 +1,5 @@
 
+import os 
 import time 
 import flax 
 import logging
@@ -11,7 +12,7 @@ from networks import resnet
 from flax.training import checkpoints 
 from flax.training import common_utils
 from flax.training import train_state 
-from utils import data_utils
+from utils import data_utils, expt_utils
 from clu import metric_writers
 from clu import periodic_actions
 from torchvision import transforms, datasets
@@ -36,6 +37,11 @@ DATASETS = {
     "cifar10": datasets.CIFAR10,
     "cifar100": datasets.CIFAR100
 }
+
+# Experimental 
+# os.environ['XLA_FLAGS'] = '--xla_gpu_strict_conv_algorithm_picker=false'
+os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
+
 
 class TrainState(train_state.TrainState):
     batch_stats: Any 
@@ -233,21 +239,23 @@ def run(args, workdir):
     best_val = 0
     
     # Main loop
+    print('\n[info] beginning training...\n')
     for epoch in range(1, args.epochs+1):
         
         for step, batch in enumerate(train_loader):
             batch = {'image': batch[0], 'label': batch[1]}
             state, metrics = p_train_step(state, batch)
             train_metrics.append(metrics)
+            expt_utils.progress_bar((step+1)/len(train_loader), desc=f'train epoch {epoch}', status="")
+        print()
+        train_metrics = common_utils.get_metrics(train_metrics)
+        summary = {f'train {k}': v for k, v in jax.tree_map(lambda x: x.mean(), train_metrics).items()}
+        summary['epoch_time'] = time.time() - train_metrics_last_t
         
-            if (step + 1) % args.log_interval == 0:
-                train_metrics = common_utils.get_metrics(train_metrics)
-                summary = {f'train {k}': v for k, v in jax.tree_map(lambda x: x.mean(), train_metrics).item()}
-                summary['steps_per_second'] = args.log_interval / (time.time() - train_metrics_last_t)
-                writer.write_scalars(step+1, summary)
-                train_metrics = []
-                train_metrics_last_t = time.time()
-                
+        print('Train epoch {} | {}'.format(epoch, ' | '.join(['{}: {:.4f}'.format(k, v) for k, v in summary.items()])))
+        train_metrics = []
+        train_metrics_last_t = time.time()
+        
         if epoch % args.eval_every == 0:
             eval_metrics = []
             state = sync_batch_stats(state)
@@ -256,10 +264,11 @@ def run(args, workdir):
                 batch = {'image': batch[0], 'label': batch[1]}
                 metrics = p_eval_step(state, batch)
                 eval_metrics.append(metrics)
-                
+                expt_utils.progress_bar((step+1)/len(val_loader), desc=f'eval epoch {epoch}', status="")
+            print()
             eval_metrics = common_utils.get_metrics(eval_metrics)
             summary = jax.tree_map(lambda x: x.mean(), eval_metrics)
-            logging.info('Eval epoch {} | Loss: {:.4f} | Accuracy: {:.2f}'.format(
+            print('Eval epoch {} | Loss: {:.4f} | Accuracy: {:.2f}'.format(
                 epoch, summary['loss'], summary['accuracy'] * 100.0
             ))
             writer.write_scalars(
@@ -271,6 +280,8 @@ def run(args, workdir):
                 best_val = summary['accuracy']
                 state = sync_batch_stats(state)
                 save_checkpoint(state, workdir)
+        
+        print('-----------------------------------------------------------------')
                 
     jax.random.normal(jax.random.PRNGKey(args.seed), ()).block_until_ready()
     return state
