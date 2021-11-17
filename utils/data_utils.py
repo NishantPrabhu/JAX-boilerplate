@@ -1,53 +1,56 @@
 
 import torch
+import numpy as np
 import jax.numpy as jnp
-from torchvision import datasets
-from .vision_augs import get_transform
+from torchvision import datasets, transforms
 from torch.utils.data import Dataset, DataLoader
 
-DATASETS = {
-    "cifar10": datasets.CIFAR10,
-    "cifar100": datasets.CIFAR100
-}
 
-class MultiEpochsDataLoader(torch.utils.data.DataLoader):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self._DataLoader__initialized = False
-        self.batch_sampler = _RepeatSampler(self.batch_sampler)
-        self._DataLoader__initialized = True
-        self.iterator = super().__iter__()
-
-    def __len__(self):
-        return len(self.batch_sampler.sampler)
-
-    def __iter__(self):
-        for i in range(len(self)):
-            yield next(self.iterator)
-
-class _RepeatSampler(object):
-    def __init__(self, sampler):
-        self.sampler = sampler
-
-    def __iter__(self):
-        while True:
-            yield from iter(self.sampler)
-
-def collate_func(batch):
-    """ Converts images/labels to NHWC jax.numpy DeviceArrays and returns batch items as dict """
-    images, labels = zip(*batch)
-    images, labels = torch.stack(images, 0).permute(0, 2, 3, 1).numpy(), torch.tensor(labels).long().numpy()
-    images, labels = jnp.asarray(images), jnp.asarray(labels)
-    return {"img": images, "label": labels}
-
-def prepare_standard_dataset(name, transforms, download_root=None):
-    root = f"data/{name}" if download_root is None else download_root
-    assert name in DATASETS.keys(), f"Only {list(DATASETS.keys())} are available as of now"
-    train_dset = DATASETS.get(name)(root=root, train=True, transform=get_transform(transforms["train"]), download=True)
-    test_dset = DATASETS.get(name)(root=root, train=False, transform=get_transform(transforms["test"]), download=True)
-    return train_dset, test_dset
-
-def get_multi_epoch_loaders(train_dset, test_dset, batch_size, num_workers):
-    train_loader = MultiEpochsDataLoader(train_dset, batch_size=batch_size, num_workers=num_workers, shuffle=True, drop_last=True, collate_fn=collate_func)
-    test_loader = MultiEpochsDataLoader(test_dset, batch_size=batch_size, num_workers=num_workers, shuffle=False, drop_last=True, collate_fn=collate_func)
-    return train_loader, test_loader
+def jax_collate(batch):
+    if isinstance(batch[0], jnp.ndarray):
+        return jnp.stack(batch)
+    elif isinstance(batch[0], (tuple, list)):
+        transposed = zip(*batch)
+        return [jax_collate(samples) for samples in transposed]
+    else:
+        return jnp.array(batch)
+    
+    
+class DataTransform:
+    
+    def __init__(self, transform=None):
+        self.transform = transform
+    
+    def __call__(self, img):
+        img = self.transform(img).permute(1, 2, 0).numpy()
+        return jnp.asarray(img, dtype=jnp.float32)
+    
+    
+class JaxDataLoader(DataLoader):
+    
+    def __init__(
+        self, 
+        dataset, 
+        batch_size=1,
+        shuffle=False,
+        sampler=None,
+        batch_sampler=None,
+        num_workers=0,
+        pin_memory=False,
+        drop_last=False,
+        timeout=0,
+        worker_init_fn=None
+    ):
+        super(self.__class__, self).__init__(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            sampler=sampler,
+            batch_sampler=batch_sampler,
+            num_workers=num_workers,
+            collate_fn=jax_collate,
+            pin_memory=pin_memory,
+            drop_last=drop_last,
+            timeout=timeout,
+            worker_init_fn=worker_init_fn
+        )

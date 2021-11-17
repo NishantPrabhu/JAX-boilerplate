@@ -1,155 +1,109 @@
 
-import jax
-import haiku as hk
-import jax.nn as nn
-import jax.numpy as jnp
-from haiku._src import basic
-from haiku._src import batch_norm
-from haiku._src import conv
-from haiku._src import module
-from haiku._src import pool
+import flax.linen as nn 
+import jax.numpy as jnp 
+from functools import partial 
+from typing import Any, Callable, Sequence, Tuple 
 
-# Convention redefinition
-hk.Module = module.Module
-hk.Conv2d = conv.Conv2d
-hk.Linear = basic.Linear
-hk.max_pool = pool.max_pool
-hk.avg_pool = pool.avg_pool
-hk.Sequential = basic.Sequential
-hk.BatchNorm = batch_norm.BatchNorm
-del basic, batch_norm, module, pool, conv
+ModuleDef = Any 
 
 
-def conv3x3(out_planes, stride=1, groups=1, dilation=(1, 1)):
-    return hk.Conv2d(out_planes, kernel_shape=3, stride=stride, padding=dilation, dilation=dilation,
-                     feature_group_count=groups, with_bias=False)
-
-def conv1x1(out_planes, stride=1):
-    return hk.Conv2d(out_planes, kernel_shape=1, stride=stride, with_bias=False)
-
-
-class BasicBlock(hk.Module):
-    expansion: int = 1
-    bn_config: dict = {"create_scale": True, "create_offset": True, "decay_rate": 0.999}
-
-    def __init__(self, planes, stride=1, downsample=None, groups=1, base_width=64, dilation=(1, 1), bn_config=None, name=None):
-        super(BasicBlock, self).__init__(name=name)
-        if groups != 1 or base_width != 64:
-            raise ValueError("BasicBlock only supports groups=1 and base_width=64")
-        if dilation[0] > 1 or dilation[1] > 1:
-            raise NotImplementedError("BasicBlock only supports dilation < (1, 1)")
-        if bn_config is not None and isinstance(bn_config, dict):
-            self.bn_config.update(bn_config)
-
-        self.conv1 = conv3x3(planes, stride)
-        self.bn1 = hk.BatchNorm(**self.bn_config)
-        self.conv2 = conv3x3(planes)
-        self.bn2 = hk.BatchNorm(**self.bn_config)
-        self.downsample = downsample
-        self.stride = stride
-
+class ResnetBlock(nn.Module):
+    filters: int 
+    conv: ModuleDef 
+    norm: ModuleDef 
+    act: Callable 
+    strides: Tuple[int, int] = (1, 1)
+    
+    @nn.compact
     def __call__(self, x):
-        identity = x
-        out = nn.relu(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        if self.downsample is not None:
-            identity = self.downsample(x)
-        out += identity
-        out = nn.relu(out)
-        return out
-
-
-class Bottleneck(hk.Module):
-    expansion = 4
-    bn_config = {"create_scale": True, "create_offset": True, "decay_rate": 0.999}
-
-    def __init__(self, planes, stride=1, downsample=None, groups=1, base_width=64, dilation=(1, 1), bn_config=None, name=None):
-        super(Bottleneck, self).__init__(name=name)
-        width = int(planes * base_width / 64.0)
-
-        self.conv1 = conv1x1(width)
-        self.bn1 = hk.BatchNorm(**self.bn_config)
-        self.conv2 = conv3x3(width, stride, groups, dilation)
-        self.bn2 = hk.BatchNorm(**self.bn_config)
-        self.conv3 = conv1x1(planes * self.expansion)
-        self.bn3 = hk.BatchNorm(**self.bn_config)
-        self.downsample = downsample
-        self.stride = stride
-
+        residual = x 
+        y = self.conv(self.filters, (3, 3), self.strides)(x)
+        y = self.norm()(y)
+        y = self.act(y)
+        y = self.conv(self.filters, (3, 3))(y)
+        y = self.norm(scale_init=nn.initializers.zeros)(y)
+        
+        if residual.shape != y.shape:
+            residual = self.conv(self.filters, (1, 1), self.strides, name='conv_proj')(residual)
+            residual = self.norm(name='norm_proj')(residual)
+            
+        return self.act(residual + y)
+    
+    
+class BottleneckResnetBlock(nn.Module): 
+    filters: int 
+    conv: ModuleDef 
+    norm: ModuleDef 
+    act: Callable 
+    strides: Tuple[int, int] = (1, 1)
+    
+    @nn.compact 
     def __call__(self, x):
-        identity = x
-        out = nn.relu(self.bn1(self.conv1(x)))
-        out = nn.relu(self.bn2(self.conv2(out)))
-        out = self.bn3(self.conv3(out))
-        if self.downsample is not None:
-            identity = self.downsample(x)
-        out += identity
-        out = nn.relu(out)
-        return out
-
-
-class ResNet(hk.Module):
-    bn_config = {"create_scale": True, "create_offset": True, "decay_rate": 0.999}
-
-    def __init__(self, block, layers, num_classes=1000, zero_init_residual=False, groups=1, width_per_group=64,
-                 replace_stride_with_dilation=[False, False, False], reduce_first_conv=False, bn_config=None, name=None):
-        super(ResNet, self).__init__(name=name)
-        self.inplanes = 64
-        self.dilation = (1, 1)
-        self.groups = groups
-        self.base_width = width_per_group
-
-        if not reduce_first_conv:
-            self.conv1 = hk.Conv2d(self.inplanes, kernel_shape=7, stride=2, padding=(3, 3), with_bias=False)
-        else:
-            self.conv1 = hk.Conv2d(self.inplanes, kernel_shape=3, stride=1, padding=(1, 1), with_bias=False)
-        self.bn1 = hk.BatchNorm()
-        self.layer1 = self._make_layer(block, 64, layers[0])
-        self.layer2 = self._make_layer(block, 128, stride=2, dilate=replace_stride_with_dilation[0])
-        self.layer3 = self._make_layer(block, 256, stride=2, dilate=replace_stride_with_dilation[1])
-        self.layer4 = self._make_layer(block, 512, stride=2, dilate=replace_stride_with_dilation[2])
-        self.fc = hk.Linear(num_classes)
-
-    def _make_layer(self, block, planes, blocks, stride=1, dilate=False):
-        downsample = None
-        previous_dilation = self.dilation
-        if dilate:
-            self.dilation = (self.dilation[0]*stride, self.dilation[1]*stride)
-            stride = 1
-        if stride != 1 or self.inplanes != planes * block.expansion:
-            downsample = hk.Sequential([
-                conv1x1(planes * block.expansion, stride),
-                hk.BatchNorm()
-            ])
-        layers = []
-        layers.append(block(planes, stride, downsample, self.groups, self.base_width, previous_dilation))
-        self.inplanes = planes * block.expansion
-        for _ in range(1, blocks):
-            layers.append(block(planes, groups=self.groups, base_width=self.base_width, dilation=self.dilation))
-        return hk.Sequential(layers)
-
-    def __call__(self, x):
-        x = nn.relu(self.bn1(self.conv1(x)))
-        x = hk.max_pool(x, window_shape=(3, 3), strides=2, padding="SAME")
-        x = self.layer1(x)
-        x = self.layer2(x)
-        x = self.layer3(x)
-        x = self.layer4(x)
-        x = hk.avg_pool(x, window_shape=(x.shape[1], x.shape[2]), strides=1)
-        x = x.reshape(x.shape[0], -1)
-        x = self.fc(x)
-        return x
-
-
-def _resnet(block, layers, **kwargs):
-    model = ResNet(block, layers, **kwargs)
-    return model
-
-def resnet18(**kwargs):
-    return _resnet(BasicBlock, [2, 2, 2, 2], **kwargs)
-
-def _resnet34(**kwargs):
-    return _resnet(BasicBlock, [3, 4, 6, 3], **kwargs)
-
-def resnet50(**kwargs):
-    return _resnet(Bottleneck, [3, 4, 6, 3], **kwargs)
+        residual = x 
+        y = self.conv(self.filters, (1, 1))(x)
+        y = self.norm()(y)
+        y = self.act(y)
+        y = self.conv(self.filters, (3, 3), self.strides)(y)
+        y = self.norm()(y)
+        y = self.act(y)
+        y = self.conv(self.filters * 4, (1, 1))(y)
+        y = self.norm(scale_init=nn.initializers.zeros)(y)
+        
+        if residual.shape != y.shape:
+            residual = self.conv(self.filters * 4, (1, 1), self.strides, name='conv_proj')(residual)
+            residual = self.norm(name='norm_proj')(residual)
+            
+        return self.act(residual + y)
+    
+    
+class ResNet(nn.Module):
+    stage_sizes: Sequence[int]
+    block_cls: ModuleDef
+    num_classes: int 
+    pre_conv: str = 'full'
+    num_filters: int = 64
+    dtype: Any = jnp.float32 
+    act: Callable = nn.relu 
+    
+    @nn.compact 
+    def __call__(self, x, train=True):
+        conv = partial(
+            nn.Conv, 
+            use_bias=False, 
+            dtype=self.dtype
+        )
+        norm = partial(
+            nn.BatchNorm, 
+            use_running_average=(not train),
+            momentum=0.9,
+            epsilon=1e-05,
+            dtype=self.dtype
+        )
+            
+        if self.pre_conv == 'full':
+            x = conv(self.num_filters, (7, 7), (2, 2), padding=[(3, 3), (3, 3)], name='preconv')(x)
+        elif self.pre_conv == 'small':
+            x = conv(self.num_filters, (3, 3), (1, 1), padding=[(1, 1), (1, 1)], name='preconv')(x)
+        x = norm(name='prenorm')(x)
+        x = nn.relu(x)
+        x = nn.max_pool(x, (3, 3), strides=(2, 2), padding='SAME')
+        for i, block_size in enumerate(self.stage_sizes):
+            for j in range(block_size):
+                strides = (2, 2) if i > 0 and j == 0 else (1, 1)
+                x = self.block_cls(
+                    self.num_filters * 2 ** i,
+                    strides=strides,
+                    conv=conv,
+                    norm=norm,
+                    act=self.act
+                )(x)
+        x = jnp.mean(x, axis=(1, 2))
+        x = nn.Dense(self.num_classes, dtype=self.dtype)(x)
+        x = jnp.asarray(x, self.dtype)
+        return x 
+    
+    
+ResNet18 = partial(ResNet, stage_sizes=[2, 2, 2, 2], block_cls=ResnetBlock)
+ResNet34 = partial(ResNet, stage_sizes=[3, 4, 6, 3], block_cls=ResnetBlock)
+ResNet50 = partial(ResNet, stage_sizes=[3, 4, 6, 3], block_cls=BottleneckResnetBlock)
+ResNet101 = partial(ResNet, stage_sizes=[3, 4, 23, 3], block_cls=BottleneckResnetBlock)
