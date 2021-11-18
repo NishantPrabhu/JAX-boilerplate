@@ -111,7 +111,7 @@ class Trainer:
         
         self.train_loader = data_utils.JaxDataLoader(train_dset, batch_size=args.batch_size, shuffle=True, num_workers=args.n_workers)
         self.val_loader = data_utils.JaxDataLoader(val_dset, batch_size=args.batch_size, shuffle=False, num_workers=args.n_workers)
-        self.lr_func = self.cosine_lr_schedule(steps_per_epoch=len(self.train_loader))
+        self.lr_func = self.multistep_lr_schedule(steps_per_epoch=len(self.train_loader))
         
         assert args.net in NETWORKS, f'Network {args.net} is not available'
         self.model = self.create_model()
@@ -154,10 +154,11 @@ class Trainer:
         return model
     
     def initialize_model(self, model):
+        input_shape = (self.args.input_size, self.args.input_size, 3)
         @jax.jit 
         def init(*args):
             return model.init(*args)
-        variables = init({'params': self.jax_rng}, jnp.ones((1, *self.args.input_shape), self.dtype))
+        variables = init({'params': self.jax_rng}, jnp.ones((1, *input_shape), self.dtype))
         return variables['params'], variables['batch_stats']
     
     def create_train_state(self, model):
@@ -191,6 +192,17 @@ class Trainer:
             schedules = [warmup_fn, cosine_fn],
             boundaries = [self.args.warmup_epochs * steps_per_epoch]
         ) 
+        return schedule_fn
+    
+    def multistep_lr_schedule(self, steps_per_epoch):
+        milestones = [int(m) * steps_per_epoch for m in self.args.multistep_milestones.split(',')]
+        b_and_s = {m: self.args.lr_decay for m in milestones}
+        warmup_fn = optax.linear_schedule(0, self.args.lr, self.args.warmup_epochs * steps_per_epoch)
+        piecewise_fn = optax.piecewise_constant_schedule(self.args.lr, b_and_s)
+        schedule_fn = optax.join_schedules(
+            schedules = [warmup_fn, piecewise_fn],
+            boundaries = [self.args.warmup_epochs * steps_per_epoch]
+        )
         return schedule_fn
 
     def train_step(self, state, batch):
@@ -268,7 +280,7 @@ class Trainer:
             # Training loop
             for step, batch in enumerate(self.train_loader):
                 batch = data_utils.shard(batch)
-                self.state, metrics = self.train_step(self.state, batch)
+                self.state, metrics = self.p_train_step(self.state, batch)
 
                 if self.main_thread and self.log_wandb and (step+1) % self.args.log_interval == 0:
                     wandb.log({'step': step+1, 'train loss': metrics['loss']})
@@ -297,7 +309,7 @@ class Trainer:
                 
                 for step, batch in enumerate(self.val_loader):
                     batch = data_utils.shard(batch)
-                    metrics = self.eval_step(self.state, batch)
+                    metrics = self.p_eval_step(self.state, batch)
                     val_metrics.append(metrics)
                     expt_utils.progress_bar((step+1)/len(self.val_loader), desc='eval  progress')
                 print()
@@ -336,9 +348,11 @@ if __name__ == '__main__':
     ap.add_argument('--n_workers', default=4, type=int, help='dataloading worker count')
     ap.add_argument('--net', default='resnet18', type=str, help='model architecture')
     ap.add_argument('--pre_conv', action='store_true', help='reduced or full preconv for resnet')
-    ap.add_argument('--input_shape', default=(32, 32, 3), type=tuple, help='image shape')
+    ap.add_argument('--input_size', default=32, type=int, help='image shape')
     ap.add_argument('--half_precision', action='store_true', help='float16 precision training')
     ap.add_argument('--lr', default=0.1, type=float, help='learning rate')
+    ap.add_argument('--lr_decay', default=0.1, type=float, help='learning rate decay for multistep')
+    ap.add_argument('--multistep_milestones', default='30,60', type=str, help='milestones at which multistep lr decay happens')
     ap.add_argument('--momentum', default=0.9, type=float, help='optimizer sgd momentum')
     ap.add_argument('--nesterov', action='store_true', help='sgd nesterov accelerated gradients')
     ap.add_argument('--epochs', default=100, type=int, help='training epochs')
