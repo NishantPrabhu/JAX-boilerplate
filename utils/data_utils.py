@@ -6,29 +6,32 @@ import jax.numpy as jnp
 from torchvision import datasets, transforms
 from torch.utils.data import Dataset, DataLoader
 
+    
+class ToArray:
+    
+    def __call__(self, x):
+        x = np.asarray(x, dtype=np.float32)
+        x /= 255.0 
+        return x 
+    
+    
+class ArrayNormalize:
+    
+    def __init__(self, mean, std):
+        super().__init__()
+        self.mean = mean
+        self.std = std
 
-def jax_collate(batch):
-    local_device_count = jax.local_device_count()
-    
-    if isinstance(batch[0], jnp.ndarray):
-        h, w, c = batch[0].shape
-        return jnp.stack(batch).reshape(local_device_count, -1, h, w, c)
-    elif isinstance(batch[0], (tuple, list)):
-        transposed = zip(*batch)
-        return [jax_collate(samples) for samples in transposed]
-    else:
-        return jnp.array(batch).reshape(local_device_count, -1)
-    
-    
-class DataTransform:
-    
-    def __init__(self, transform=None):
-        self.transform = transform
-        self.num_devices = jax.local_device_count()
-    
-    def __call__(self, img):
-        img = self.transform(img).permute(1, 2, 0).numpy()
-        return jnp.asarray(img, dtype=jnp.float32)
+    def __call__(self, x):
+        mean = np.asarray(self.mean, dtype=x.dtype)
+        std = np.asarray(self.std, dtype=x.dtype)
+        if mean.ndim == 1:
+            mean = mean.reshape(1, 1, -1)
+        if std.ndim == 1:
+            std = std.reshape(1, 1, -1)
+        x -= mean
+        x /= std
+        return x
     
     
 class JaxDataLoader(DataLoader):
@@ -59,3 +62,10 @@ class JaxDataLoader(DataLoader):
             timeout=timeout,
             worker_init_fn=worker_init_fn
         )
+        
+def jax_collate(batch):
+    imgs, targets = zip(*batch)
+    return np.stack(imgs), np.array(targets)
+    
+def shard(xs):
+    return jax.tree_map(lambda x: x.reshape((jax.local_device_count(), -1) + x.shape[1:]) if len(x.shape) != 0 else x, xs)

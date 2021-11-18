@@ -74,42 +74,34 @@ class Trainer:
             
         # Transforms and dataloaders
         if 'cifar' in args.data_name:
-            train_transform = data_utils.DataTransform(
-                transforms.Compose([
-                    transforms.RandomCrop(32, padding=4),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
-                ])
-            )
-            val_transform = data_utils.DataTransform(
-                transforms.Compose([
-                    transforms.Resize(32),
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
-                ])
-            )
+            train_transform = transforms.Compose([
+                transforms.RandomCrop(32, padding=4),
+                transforms.RandomHorizontalFlip(),
+                data_utils.ToArray(),
+                data_utils.ArrayNormalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+            ])
+            val_transform = transforms.Compose([
+                transforms.Resize(32),
+                data_utils.ToArray(),
+                data_utils.ArrayNormalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+            ])
             train_dset = TORCH_DATASETS[args.data_name](root=args.data_root, train=True, transform=train_transform, download=True)
             val_dset = TORCH_DATASETS[args.data_name](root=args.data_root, train=False, transform=val_transform, download=True)
             self.n_classes = 10
             
         elif 'imagenet' in args.data_name:
-            train_transform = data_utils.DataTransform(
-                transforms.Compose([
-                    transforms.RandomResizedCrop(224),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-                ])
-            )
-            val_transform = data_utils.DataTransform(
-                transforms.Compose([
-                    transforms.Resize(256),
-                    transforms.CenterCrop(224),
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
-                ])
-            )
+            train_transform = transforms.Compose([
+                transforms.RandomResizedCrop(224),
+                transforms.RandomHorizontalFlip(),
+                data_utils.ToArray(),
+                data_utils.ArrayNormalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+            ])
+            val_transform = transforms.Compose([
+                transforms.Resize(256),
+                transforms.CenterCrop(224),
+                data_utils.ToArray(),
+                data_utils.ArrayNormalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
+            ])
             train_dset = datasets.ImageFolder(root=os.path.join(args.data_root, 'train'), transform=train_transform)
             val_dset = datasets.ImageFolder(root=os.path.join(args.data_root, 'val'), transform=val_transform)
             self.n_classes = 1000
@@ -202,13 +194,14 @@ class Trainer:
         return schedule_fn
 
     def train_step(self, state, batch):
+        imgs, labels = batch
         def loss_fn(params):
             logits, new_model_state = state.apply_fn(
                 {'params': params, 'batch_stats': state.batch_stats},
-                batch['img'],
+                imgs,
                 mutable=['batch_stats']
             )        
-            loss = losses.cross_entropy_loss(logits, batch['label'])
+            loss = losses.cross_entropy_loss(logits, labels)
             weight_penalty_params = jax.tree_leaves(params)
             weight_l2 = sum([jnp.sum(x ** 2) for x in weight_penalty_params if x.ndim > 1])
             weight_penalty = self.args.weight_decay * 0.5 * weight_l2 
@@ -228,7 +221,7 @@ class Trainer:
             grads = lax.pmean(grads, axis_name='batch')
             
         new_model_state, logits = aux[1]
-        metrics = self.compute_metrics(logits, batch['label'])
+        metrics = self.compute_metrics(logits, labels)
         metrics['lr'] = lr 
         
         new_state = state.apply_gradients(grads=grads, batch_stats=new_model_state['batch_stats'])
@@ -249,9 +242,10 @@ class Trainer:
         return new_state, metrics 
     
     def eval_step(self, state, batch):
+        imgs, labels = batch
         variables = {'params': state.params, 'batch_stats': state.batch_stats}
-        logits = state.apply_fn(variables, batch['img'], train=False, mutable=False)
-        return self.compute_metrics(logits, batch['label'])
+        logits = state.apply_fn(variables, imgs, train=False, mutable=False)
+        return self.compute_metrics(logits, labels)
     
     def sync_batch_stats(self, state):
         cross_replica_mean = jax.pmap(lambda x: lax.pmean(x, 'x'), 'x')
@@ -273,8 +267,9 @@ class Trainer:
             print()
             # Training loop
             for step, batch in enumerate(self.train_loader):
-                inputs = {'img': batch[0], 'label': batch[1]}
-                self.state, metrics = self.p_train_step(self.state, inputs)
+                batch = data_utils.shard(batch) 
+                self.state, metrics = self.p_train_step(self.state, batch)
+
                 if self.main_thread and self.log_wandb and (step+1) % self.args.log_interval == 0:
                     wandb.log({'step': step+1, 'train loss': metrics['loss']})
                 train_metrics.append(metrics)
@@ -301,8 +296,8 @@ class Trainer:
                 self.state = self.sync_batch_stats(self.state)
                 
                 for step, batch in enumerate(self.val_loader):
-                    inputs = {'img': batch[0], 'label': batch[1]}
-                    metrics = self.p_eval_step(self.state, inputs)
+                    batch = data_utils.shard(batch)
+                    metrics = self.p_eval_step(self.state, batch)
                     val_metrics.append(metrics)
                     expt_utils.progress_bar((step+1)/len(self.val_loader), desc='eval  progress')
                 print()
@@ -338,7 +333,7 @@ if __name__ == '__main__':
     ap.add_argument('--data_name', default='cifar10', type=str, help='dataset')
     ap.add_argument('--data_root', default='~/Datasets/cifar10', type=str, help='directory where dataset is stored')
     ap.add_argument('--batch_size', default=128, type=int, help='batch size')
-    ap.add_argument('--n_workers', default=0, type=int, help='dataloading worker count')
+    ap.add_argument('--n_workers', default=4, type=int, help='dataloading worker count')
     ap.add_argument('--net', default='resnet18', type=str, help='model architecture')
     ap.add_argument('--pre_conv', action='store_true', help='reduced or full preconv for resnet')
     ap.add_argument('--input_shape', default=(32, 32, 3), type=tuple, help='image shape')
