@@ -267,8 +267,8 @@ class Trainer:
             print()
             # Training loop
             for step, batch in enumerate(self.train_loader):
-                batch = data_utils.shard(batch) 
-                self.state, metrics = self.p_train_step(self.state, batch)
+                # batch = data_utils.shard(batch)
+                self.state, metrics = self.train_step(self.state, batch)
 
                 if self.main_thread and self.log_wandb and (step+1) % self.args.log_interval == 0:
                     wandb.log({'step': step+1, 'train loss': metrics['loss']})
@@ -296,8 +296,8 @@ class Trainer:
                 self.state = self.sync_batch_stats(self.state)
                 
                 for step, batch in enumerate(self.val_loader):
-                    batch = data_utils.shard(batch)
-                    metrics = self.p_eval_step(self.state, batch)
+                    # batch = data_utils.shard(batch)
+                    metrics = self.eval_step(self.state, batch)
                     val_metrics.append(metrics)
                     expt_utils.progress_bar((step+1)/len(self.val_loader), desc='eval  progress')
                 print()
