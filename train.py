@@ -118,7 +118,7 @@ class Trainer:
         self.state = self.create_train_state(self.model)
         if args.resume:
             self.state = restore_checkpoint(self.out_dir, self.state)
-        self.state = jax_utils.replicate(self.state)                            # Required for multi-core training
+        # self.state = jax_utils.replicate(self.state)                            # Required for multi-core training
         
         self.p_train_step = jax.pmap(self.train_step, axis_name='batch')
         self.p_eval_step = jax.pmap(self.eval_step, axis_name='batch')
@@ -180,7 +180,7 @@ class Trainer:
         loss = losses.cross_entropy_loss(logits, labels)
         accuracy = jnp.mean(jnp.argmax(logits, -1) == labels)
         metrics = {'loss': loss, 'accuracy': accuracy}
-        metrics = lax.pmean(metrics, axis_name='batch')
+        # metrics = lax.pmean(metrics, axis_name='batch')
         return metrics 
     
     def cosine_lr_schedule(self, steps_per_epoch):
@@ -218,7 +218,7 @@ class Trainer:
         else:
             grad_fn = jax.value_and_grad(loss_fn, has_aux=True)
             aux, grads = grad_fn(state.params)
-            grads = lax.pmean(grads, axis_name='batch')
+            # grads = lax.pmean(grads, axis_name='batch')
             
         new_model_state, logits = aux[1]
         metrics = self.compute_metrics(logits, labels)
@@ -252,9 +252,9 @@ class Trainer:
         return state.replace(batch_stats=cross_replica_mean(state.batch_stats))
     
     def save(self):
-        state = jax.device_get(jax.tree_map(lambda x: x[0], self.state))
-        step = int(state.step)
-        checkpoints.save_checkpoint(self.out_dir, state, step, keep=3)
+        # state = jax.device_get(jax.tree_map(lambda x: x[0], self.state))
+        step = int(self.state.step)
+        checkpoints.save_checkpoint(self.out_dir, self.state, step, keep=3)
             
     def load(self, out_dir):
         checkpoints.restore_checkpoint(out_dir, self.state)
@@ -275,8 +275,9 @@ class Trainer:
                 train_metrics.append(metrics)
                 expt_utils.progress_bar((step+1)/len(self.train_loader), desc='train progress')
             print()
-            train_metrics = common_utils.get_metrics(train_metrics)
-            train_summary = {f'train {k}': v for k, v in jax.tree_map(lambda x: x.mean(), train_metrics).items()}
+            # train_metrics = common_utils.get_metrics(train_metrics)
+            # train_summary = {f'train {k}': v for k, v in jax.tree_map(lambda x: x.mean(), train_metrics).items()}
+            train_summary = {f'train {k}': np.mean([dct[k] for dct in train_metrics]) for k in train_metrics[0].keys()}
             train_summary['epoch time'] = time.time() - train_last_t
             
             if self.main_thread:
@@ -293,7 +294,7 @@ class Trainer:
             # Evaluation loop
             if self.main_thread and epoch % self.args.eval_every == 0 or epoch == self.args.epochs:
                 print()
-                self.state = self.sync_batch_stats(self.state)
+                # self.state = self.sync_batch_stats(self.state)
                 
                 for step, batch in enumerate(self.val_loader):
                     # batch = data_utils.shard(batch)
@@ -301,8 +302,9 @@ class Trainer:
                     val_metrics.append(metrics)
                     expt_utils.progress_bar((step+1)/len(self.val_loader), desc='eval  progress')
                 print()
-                val_metrics = common_utils.get_metrics(val_metrics)
-                val_summary = {f'val {k}': v for k, v in jax.tree_map(lambda x: x.mean(), val_metrics).items()}
+                # val_metrics = common_utils.get_metrics(val_metrics)
+                # val_summary = {f'val {k}': v for k, v in jax.tree_map(lambda x: x.mean(), val_metrics).items()}
+                val_summary = {f'val {k}': np.mean([dct[k] for dct in val_metrics]) for k in val_metrics[0].keys()}
                 
                 print('eval  epoch: {:3d} | {}'.format(epoch, ' | '.join(['{}: {:.4f}'.format(k, v) for k, v in val_summary.items()])))
                 if self.log_wandb:
