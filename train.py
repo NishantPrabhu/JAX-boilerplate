@@ -252,7 +252,7 @@ class Trainer:
         return state.replace(batch_stats=cross_replica_mean(state.batch_stats))
     
     def save(self):
-        state = jax.device_get(jax.tree_map(lambda x: x[0], self.state))
+        self.state = jax.device_get(jax.tree_map(lambda x: x[0], self.state))
         step = int(self.state.step)
         checkpoints.save_checkpoint(self.out_dir, self.state, step, keep=3)
             
