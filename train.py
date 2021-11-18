@@ -1,30 +1,31 @@
 
 import os 
 import time 
-import flax 
 import logging
 import argparse
 import functools
-from clu import platform 
-from flax import jax_utils 
-from flax import optim 
-from networks import resnet 
-from flax.training import checkpoints 
-from flax.training import common_utils
-from flax.training import train_state 
-from utils import data_utils, expt_utils
-from clu import metric_writers
-from clu import periodic_actions
-from torchvision import transforms, datasets
-from datetime import datetime as dt
 from typing import Any
+from datetime import datetime as dt
+from utils import data_utils, expt_utils
+from torchvision import transforms, datasets
+from networks import resnet 
 
 import jax 
-from jax import lax 
-from jax import random 
-import jax.numpy as jnp 
+import flax 
 import optax 
+import jax.numpy as jnp 
 import tensorflow as tf
+from jax import lax 
+from flax import optim 
+from jax import random 
+from clu import platform 
+from flax import jax_utils 
+from clu import metric_writers
+from flax.training import checkpoints
+from flax.training import train_state 
+from flax.training import common_utils
+
+os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
 
 NETWORKS = {
     'resnet18': resnet.ResNet18,
@@ -37,10 +38,6 @@ DATASETS = {
     "cifar10": datasets.CIFAR10,
     "cifar100": datasets.CIFAR100
 }
-
-# Experimental 
-# os.environ['XLA_FLAGS'] = '--xla_gpu_strict_conv_algorithm_picker=false'
-os.environ['XLA_PYTHON_CLIENT_ALLOCATOR'] = 'platform'
 
 
 class TrainState(train_state.TrainState):
@@ -179,13 +176,13 @@ def create_train_state(rng, half_precision, model, img_shape, lr_func, momentum)
     else:
         dynamic_scale = None 
         
-    params, batch_state = initialize(rng, img_shape, model)
+    params, batch_stats = initialize(rng, img_shape, model)
     tx = optax.sgd(learning_rate=lr_func, momentum=momentum, nesterov=True)
     state = TrainState.create(
         apply_fn=model.apply,
         params=params,
         tx=tx,
-        batch_stats=batch_state,
+        batch_stats=batch_stats,
         dynamic_scale=dynamic_scale
     )
     return state 
@@ -315,9 +312,4 @@ if __name__ == '__main__':
 
     logging.info('JAX process: %d / %d', jax.process_index(), jax.process_count())
     logging.info('JAX local devices: %r', jax.local_devices())
-
-    # Add a note so that we can tell which task is which JAX host.
-    # (Depending on the platform task 0 is not guaranteed to be host 0)
-    platform.work_unit().set_task_status(f'process_index: {jax.process_index()}, '
-                                        f'process_count: {jax.process_count()}')
     run(args, 'tmp/cifar10')

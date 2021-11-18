@@ -48,7 +48,7 @@ class Logger:
         logging.basicConfig(
             level = logging.INFO,
             format = "%(message)s",
-            handlers = [logging.FileHandler(os.path.join(output_dir, "trainlogs.txt"))])
+            handlers = [logging.FileHandler(os.path.join(output_dir, "logs.txt"))])
 
     def print(self, msg, mode=""):
         if mode == "info":
@@ -74,7 +74,7 @@ class Logger:
         self.write(msg, mode)
 
 
-def progress_bar(progress=0, desc="Progress", barlen=20, status=None):
+def progress_bar(progress=0, desc="Progress", barlen=20, status=''):
     status = status.ljust(30)
     if progress == 1:
         status = "{}".format(status.ljust(30))
