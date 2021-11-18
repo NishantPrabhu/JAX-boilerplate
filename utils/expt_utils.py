@@ -119,3 +119,10 @@ def initialize_experiment(args, output_root, seed=420):
 
     logger.print(f"Found {jax.local_device_count()} devices of type {type(jax.devices()[0])}", mode="info")
     return config, output_dir, logger
+
+def print_args(args):
+    print("\n---- experiment configuration ----")
+    args_ = vars(args)
+    for arg, value in args_.items():
+        print(f" * {arg} => {value}")
+    print("----------------------------------")
