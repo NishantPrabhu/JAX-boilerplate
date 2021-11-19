@@ -287,8 +287,9 @@ class Trainer:
                 batch = data_utils.shard(batch)
                 self.state, metrics = self.p_train_step(self.state, batch)
 
-                if self.main_thread and self.log_wandb and (step+1) % self.args.log_interval == 0:
-                    wandb.log({'step': step+1, 'train loss': metrics['loss']})
+                if self.main_thread and (step+1) % self.args.log_interval == 0:
+                    if self.log_wandb:
+                        wandb.log({'step': step+1, 'train loss': metrics['loss']})
                     train_metrics.append(metrics)
                     expt_utils.progress_bar((step+1)/len(self.train_loader), desc='train progress')
             print()
