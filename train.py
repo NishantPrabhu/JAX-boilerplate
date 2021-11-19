@@ -280,15 +280,27 @@ class Trainer:
         for epoch in range(1, self.args.epochs+1):
             print()
             # Training loop
+            time0 = time.time()
             for step, batch in enumerate(self.train_loader):
+                time1 = time.time()
                 batch = data_utils.shard(batch)
+                time2 = time.time()
                 self.state, metrics = self.p_train_step(self.state, batch)
+                time3 = time.time()
                 
                 if (step+1) % self.args.log_interval == 0:
                     if self.log_wandb:
                         wandb.log({'step': step+1, 'train loss': metrics['loss']})
                     train_metrics.append(metrics)
                     expt_utils.progress_bar((step+1)/len(self.train_loader), desc='train progress')
+                    time4 = time.time()
+
+                print("Loader time: {:.4f}".format(time1 - time0))
+                print("Loading time: {:.4f}".format(time2 - time1))
+                print("Learning time: {:.4f}".format(time3 - time2))
+                print("Logging time: {:.4f}".format(time4 - time3))
+                time5 = time.time()
+                print("Printing time: {:.4f}".format(time5 - time4))
             print()
             train_metrics = common_utils.get_metrics(train_metrics)
             train_summary = {f'train {k}': v for k, v in jax.tree_map(lambda x: x.mean(), train_metrics).items()}
