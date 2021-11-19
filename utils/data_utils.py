@@ -72,10 +72,15 @@ def shard(xs):
 
 def shard_new(loader):
     img_shards, label_shards = [], []
+    dont_empty = True
+    
     for imgs, labels in loader:
+        if len(img_shards) > 0 and not dont_empty:
+            img_shards, label_shards = [], []
+            dont_empty = True
+        
         img_shards.append(imgs)
         label_shards.append(labels)
         if len(img_shards) % jax.local_device_count() == 0:
-            temp_img, temp_labels = img_shards, label_shards
-            img_shards, label_shards = [], []
-            yield jnp.stack(temp_img, 0), jnp.stack(temp_labels, 0)
+            dont_empty = False
+            yield jnp.stack(img_shards, 0), jnp.stack(label_shards, 0)
