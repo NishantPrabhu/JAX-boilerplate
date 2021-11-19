@@ -293,6 +293,8 @@ class Trainer:
             train_metrics = common_utils.get_metrics(train_metrics)
             train_summary = {f'train {k}': v for k, v in jax.tree_map(lambda x: x.mean(), train_metrics).items()}
             train_summary['epoch time'] = time.time() - train_last_t
+            train_metrics, val_metrics = [], []
+            train_last_t = time.time()
             train_step = 0
             
             print('train epoch: {:3d} | {}'.format(epoch, ' | '.join(['{}: {:.4f}'.format(k, v) for k, v in train_summary.items()]))) 
@@ -332,8 +334,6 @@ class Trainer:
                     self.best_eval = val_summary['val accuracy']
                     self.save()
                 
-            train_metrics, val_metrics = [], []
-            train_last_t = time.time() 
             print()
             self.logger.record('Epoch: {:3d} | Best train: {:.4f} | Best eval: {:.4f}'.format(epoch, self.best_train, self.best_eval), 'info')
             print('--------------------------------------------------------------')
