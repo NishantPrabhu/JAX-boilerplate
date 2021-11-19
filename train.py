@@ -129,7 +129,7 @@ class Trainer:
             self.lr_func = lr_schedulers.multistep_lr_schedule(
                 base_lr=self.args.lr, 
                 lr_decay=self.args.lr_decay, 
-                milestones=self.args.multistep_milestones, 
+                milestones=self.args.milestones, 
                 warmup_epochs=self.args.warmup_epochs, 
                 steps_per_epoch=len(self.train_loader)
             )
