@@ -289,8 +289,8 @@ class Trainer:
 
                 if self.main_thread and self.log_wandb and (step+1) % self.args.log_interval == 0:
                     wandb.log({'step': step+1, 'train loss': metrics['loss']})
-                train_metrics.append(metrics)
-                expt_utils.progress_bar((step+1)/len(self.train_loader), desc='train progress')
+                    train_metrics.append(metrics)
+                    expt_utils.progress_bar((step+1)/len(self.train_loader), desc='train progress')
             print()
             train_metrics = common_utils.get_metrics(train_metrics)
             train_summary = {f'train {k}': v for k, v in jax.tree_map(lambda x: x.mean(), train_metrics).items()}
