@@ -1,11 +1,13 @@
 
 import os 
-import time 
+import time
+import wandb 
 import torch
 import logging
 import argparse
 import functools
 import numpy as np
+import lr_schedulers
 from typing import Any
 from datetime import datetime as dt
 from utils import data_utils, expt_utils
@@ -13,7 +15,7 @@ from torchvision import transforms, datasets
 from networks import resnet 
 
 import jax 
-import flax 
+import flax
 import optax 
 import losses
 import jax.numpy as jnp 
@@ -21,9 +23,7 @@ import tensorflow as tf
 from jax import lax 
 from jax import random 
 from flax import optim 
-from clu import platform 
-from flax import jax_utils 
-from clu import metric_writers
+from flax import jax_utils
 from flax.training import checkpoints
 from flax.training import train_state 
 from flax.training import common_utils
@@ -54,6 +54,7 @@ class Trainer:
         self.main_thread = (jax.process_index() == 0)
         self.out_dir = os.path.join('output', args.out_dir) 
         os.makedirs(self.out_dir, exist_ok=True)
+        self.platform = jax.local_devices()[0].platform
         
         if self.main_thread:
             expt_utils.print_args(self.args)
@@ -65,7 +66,7 @@ class Trainer:
         self.jax_rng = jax.random.PRNGKey(args.seed)
         
         if self.args.half_precision:
-            if platform == 'tpu':
+            if self.platform == 'tpu':
                 self.dtype = jnp.bfloat16
             else:
                 self.dtype = jnp.float16
@@ -109,25 +110,38 @@ class Trainer:
         else:
             raise ValueError(f'Dataset {args.data_name} is not available')
         
-        self.train_loader = data_utils.JaxDataLoader(train_dset, batch_size=args.batch_size, shuffle=True, num_workers=args.n_workers)
-        self.val_loader = data_utils.JaxDataLoader(val_dset, batch_size=args.batch_size, shuffle=False, num_workers=args.n_workers)
-        self.lr_func = self.multistep_lr_schedule(steps_per_epoch=len(self.train_loader))
+        global_batch_size = args.batch_size * jax.local_device_count()
+        self.train_loader = data_utils.JaxDataLoader(train_dset, batch_size=global_batch_size, shuffle=True, num_workers=args.n_workers)
+        self.val_loader = data_utils.JaxDataLoader(val_dset, batch_size=global_batch_size, shuffle=False, num_workers=args.n_workers)
+        
+        if args.lr_sched == 'cosine':
+            self.lr_func = lr_schedulers.cosine_lr_schedule(
+                base_lr=self.args.lr, 
+                total_epochs=self.args.epochs, 
+                warmup_epochs=self.args.warmup_epochs, 
+                steps_per_epoch=len(self.train_loader)
+            )
+        elif args.lr_sched == 'multistep':
+            self.lr_func = lr_schedulers.multistep_lr_schedule(
+                base_lr=self.args.lr, 
+                lr_decay=self.args.lr_decay, 
+                milestones=self.args.multistep_milestones, 
+                warmup_epochs=self.args.warmup_epochs, 
+                steps_per_epoch=len(self.train_loader)
+            )
+        else:
+            raise NotImplementedError(f'Scheduler {args.lr_sched} is not available')
         
         assert args.net in NETWORKS, f'Network {args.net} is not available'
         self.model = self.create_model()
         self.state = self.create_train_state(self.model)
         if args.resume:
-            self.state = restore_checkpoint(self.out_dir, self.state)
+            self.state = self.load(self.out_dir, self.state)
         self.state = jax_utils.replicate(self.state)                            # Required for multi-core training
         
         self.p_train_step = jax.pmap(self.train_step, axis_name='batch')
         self.p_eval_step = jax.pmap(self.eval_step, axis_name='batch')
         self.best_train, self.best_eval = 0, 0
-        
-        if args.batch_size % jax.local_device_count() > 0:
-            raise ValueError(f'Batch size {args.batch_size} is not divisible by device count {jax.local_device_count()}')
-        local_batch_size = args.batch_size // jax.process_count()
-        platform = jax.local_devices()[0].platform
         
         # Logging and wandb 
         if self.main_thread:
@@ -167,7 +181,13 @@ class Trainer:
         dynamic_scale = optim.DynamicScale() if (self.args.half_precision and platform == 'gpu') else None
         
         params, batch_stats = self.initialize_model(model)
-        tx = optax.sgd(learning_rate=self.lr_func, momentum=self.args.momentum, nesterov=args.nesterov)
+        if self.args.optim == 'sgd':
+            tx = optax.sgd(learning_rate=self.lr_func, momentum=self.args.momentum, nesterov=self.args.nesterov)
+        elif self.args.optim == 'adam':
+            tx = optax.adamw(learning_rate=self.lr_func, b1=0.9, b2=0.999, weight_decay=self.args.weight_decay)
+        else:    
+            raise NotImplementedError(f'Optimizer {self.args.optim} is not available')
+            
         state = TrainState.create(
             apply_fn=model.apply,
             params=params,
@@ -183,30 +203,10 @@ class Trainer:
         metrics = {'loss': loss, 'accuracy': accuracy}
         metrics = lax.pmean(metrics, axis_name='batch')
         return metrics 
-    
-    def cosine_lr_schedule(self, steps_per_epoch):
-        warmup_fn = optax.linear_schedule(0, self.args.lr, self.args.warmup_epochs * steps_per_epoch)
-        cosine_epochs = max(self.args.epochs - self.args.warmup_epochs, 1)
-        cosine_fn = optax.cosine_decay_schedule(self.args.lr, cosine_epochs * steps_per_epoch)
-        schedule_fn = optax.join_schedules(
-            schedules = [warmup_fn, cosine_fn],
-            boundaries = [self.args.warmup_epochs * steps_per_epoch]
-        ) 
-        return schedule_fn
-    
-    def multistep_lr_schedule(self, steps_per_epoch):
-        milestones = [int(m) * steps_per_epoch for m in self.args.multistep_milestones.split(',')]
-        b_and_s = {m: self.args.lr_decay for m in milestones}
-        warmup_fn = optax.linear_schedule(0, self.args.lr, self.args.warmup_epochs * steps_per_epoch)
-        piecewise_fn = optax.piecewise_constant_schedule(self.args.lr, b_and_s)
-        schedule_fn = optax.join_schedules(
-            schedules = [warmup_fn, piecewise_fn],
-            boundaries = [self.args.warmup_epochs * steps_per_epoch]
-        )
-        return schedule_fn
 
     def train_step(self, state, batch):
         imgs, labels = batch
+        
         def loss_fn(params):
             logits, new_model_state = state.apply_fn(
                 {'params': params, 'batch_stats': state.batch_stats},
@@ -214,10 +214,11 @@ class Trainer:
                 mutable=['batch_stats']
             )        
             loss = losses.cross_entropy_loss(logits, labels)
-            weight_penalty_params = jax.tree_leaves(params)
-            weight_l2 = sum([jnp.sum(x ** 2) for x in weight_penalty_params if x.ndim > 1])
-            weight_penalty = self.args.weight_decay * 0.5 * weight_l2 
-            loss = loss + weight_penalty 
+            if self.args.optim != 'adam':
+                weight_penalty_params = jax.tree_leaves(params)
+                weight_l2 = sum([jnp.sum(x ** 2) for x in weight_penalty_params if x.ndim > 1])
+                weight_penalty = self.args.weight_decay * 0.5 * weight_l2 
+                loss = loss + weight_penalty 
             return loss, (new_model_state, logits)
         
         step = state.step
@@ -346,17 +347,22 @@ if __name__ == '__main__':
     ap.add_argument('--data_root', default='~/Datasets/cifar10', type=str, help='directory where dataset is stored')
     ap.add_argument('--batch_size', default=128, type=int, help='batch size')
     ap.add_argument('--n_workers', default=4, type=int, help='dataloading worker count')
+    ap.add_argument('--half_precision', action='store_true', help='float16 precision training')
+    
     ap.add_argument('--net', default='resnet18', type=str, help='model architecture')
     ap.add_argument('--pre_conv', action='store_true', help='reduced or full preconv for resnet')
     ap.add_argument('--input_size', default=32, type=int, help='image shape')
-    ap.add_argument('--half_precision', action='store_true', help='float16 precision training')
+    
+    ap.add_argument('--lr_sched', default='cosine', type=str, help='learning rate scheduler type')
     ap.add_argument('--lr', default=0.1, type=float, help='learning rate')
     ap.add_argument('--lr_decay', default=0.1, type=float, help='learning rate decay for multistep')
-    ap.add_argument('--multistep_milestones', default='30,60', type=str, help='milestones at which multistep lr decay happens')
-    ap.add_argument('--momentum', default=0.9, type=float, help='optimizer sgd momentum')
-    ap.add_argument('--nesterov', action='store_true', help='sgd nesterov accelerated gradients')
+    ap.add_argument('--milestones', default='30,60', type=str, help='milestones at which multistep lr decay happens')
+    ap.add_argument('--optim', default='sgd', type=str, help='optimizer type')
+    ap.add_argument('--momentum', default=0.9, type=float, help='optimizer momentum for sgd')
+    ap.add_argument('--nesterov', action='store_true', help='nesterov accelerated gradients for sgd')
+    ap.add_argument('--weight_decay', default=1e-06, type=float, help='weight decay strength')
+    
     ap.add_argument('--epochs', default=100, type=int, help='training epochs')
-    ap.add_argument('--weight_decay', default=1e-06, type=float, help='weight decay')
     ap.add_argument('--warmup_epochs', default=0, type=int, help='linear LR warmup epochs')
     ap.add_argument('--log_interval', default=10, type=int, help='number of steps to log after')
     ap.add_argument('--eval_every', default=1, type=int, help='number of epochs to eval after')
@@ -370,5 +376,3 @@ if __name__ == '__main__':
     # Train
     trainer = Trainer(args)
     trainer.run()
-    
-    
