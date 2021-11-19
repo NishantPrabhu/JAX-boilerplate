@@ -86,7 +86,9 @@ class ResNet(nn.Module):
             x = conv(self.num_filters, (3, 3), (1, 1), padding=[(1, 1), (1, 1)], name='preconv')(x)
         x = norm(name='prenorm')(x)
         x = nn.relu(x)
-        x = nn.max_pool(x, (3, 3), strides=(2, 2), padding='SAME')
+        if self.pre_conv == 'full':
+            x = nn.max_pool(x, (3, 3), strides=(2, 2), padding='SAME')
+        
         for i, block_size in enumerate(self.stage_sizes):
             for j in range(block_size):
                 strides = (2, 2) if i > 0 and j == 0 else (1, 1)

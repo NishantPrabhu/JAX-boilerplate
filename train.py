@@ -108,12 +108,12 @@ class Trainer:
         else:
             raise ValueError(f'Dataset {args.data_name} is not available')
         
-        global_batch_size = args.batch_size * jax.local_device_count()
+        # global_batch_size = args.batch_size * jax.local_device_count()
         self.train_loader = data_utils.JaxDataLoader(
-            train_dset, batch_size=global_batch_size, shuffle=True, drop_last=True, num_workers=args.n_workers
+            train_dset, batch_size=args.batch_size, shuffle=True, drop_last=True, num_workers=args.n_workers
         )
         self.val_loader = data_utils.JaxDataLoader(
-            val_dset, batch_size=global_batch_size, shuffle=False, drop_last=False, num_workers=args.n_workers
+            val_dset, batch_size=args.batch_size, shuffle=False, drop_last=False, num_workers=args.n_workers
         )
         
         if args.lr_sched == 'cosine':
@@ -206,7 +206,7 @@ class Trainer:
         return metrics 
 
     def train_step(self, state, batch):
-        imgs, labels = batch
+        imgs, labels = batch 
         
         def loss_fn(params):
             logits, new_model_state = state.apply_fn(
@@ -279,20 +279,21 @@ class Trainer:
         
         for epoch in range(1, self.args.epochs+1):
             print()
-            # Training loop
-            for step, batch in enumerate(self.train_loader):
-                batch = data_utils.shard(batch)
+            train_step = 0
+            for batch in data_utils.shard_new(self.train_loader):
                 self.state, metrics = self.p_train_step(self.state, batch)
+                train_step += 1
                 
-                if (step+1) % self.args.log_interval == 0:
+                if train_step % self.args.log_interval == 0:
                     if self.log_wandb:
-                        wandb.log({'step': step+1, 'train loss': metrics['loss']})
+                        wandb.log({'step': train_step+1, 'train loss': metrics['loss']})
                     train_metrics.append(metrics)
-                    expt_utils.progress_bar((step+1)/len(self.train_loader), desc='train progress')
+                    expt_utils.progress_bar((train_step+1)/len(self.train_loader), desc='train progress')
             print()
             train_metrics = common_utils.get_metrics(train_metrics)
             train_summary = {f'train {k}': v for k, v in jax.tree_map(lambda x: x.mean(), train_metrics).items()}
             train_summary['epoch time'] = time.time() - train_last_t
+            train_step = 0
             
             print('train epoch: {:3d} | {}'.format(epoch, ' | '.join(['{}: {:.4f}'.format(k, v) for k, v in train_summary.items()]))) 
             if self.log_wandb:
@@ -307,16 +308,18 @@ class Trainer:
             # Evaluation loop
             if epoch % self.args.eval_every == 0 or epoch == self.args.epochs:
                 print()
+                val_step = 0
                 self.state = self.sync_batch_stats(self.state)
                 
-                for step, batch in enumerate(self.val_loader):
-                    batch = data_utils.shard(batch)
+                for batch in data_utils.shard_new(self.val_loader):
                     metrics = self.p_eval_step(self.state, batch)
+                    val_step += 1
                     val_metrics.append(metrics)
-                    expt_utils.progress_bar((step+1)/len(self.val_loader), desc='eval  progress')
+                    expt_utils.progress_bar((val_step+1)/len(self.val_loader), desc='eval  progress')
                 print()
                 val_metrics = common_utils.get_metrics(val_metrics)
                 val_summary = {f'val {k}': v for k, v in jax.tree_map(lambda x: x.mean(), val_metrics).items()}
+                val_step = 0
                 
                 print('eval  epoch: {:3d} | {}'.format(epoch, ' | '.join(['{}: {:.4f}'.format(k, v) for k, v in val_summary.items()])))
                 if self.log_wandb:
