@@ -54,10 +54,8 @@ class Trainer:
         self.main_thread = (jax.process_index() == 0)
         self.out_dir = os.path.join('output', args.out_dir) 
         os.makedirs(self.out_dir, exist_ok=True)
-        self.platform = jax.local_devices()[0].platform
-        
-        if self.main_thread:
-            expt_utils.print_args(self.args)
+        self.platform = jax.local_devices()[0].platform        
+        expt_utils.print_args(self.args)
         
         np.random.seed(args.seed)
         torch.manual_seed(args.seed)
@@ -148,14 +146,13 @@ class Trainer:
         self.best_train, self.best_eval = 0, 0
         
         # Logging and wandb 
-        if self.main_thread:
-            self.logger = expt_utils.Logger(self.out_dir)
-            self.logger.print('JAX local devices: {}'.format(jax.local_devices()), 'info')
-            self.log_wandb = False
-            if args.wandb:
-                run = wandb.init()
-                self.logger.write('wandb url: {}'.format(run.get_url()))
-                self.log_wandb = True
+        self.logger = expt_utils.Logger(self.out_dir)
+        self.logger.print('JAX local devices: {}'.format(jax.local_devices()), 'info')
+        self.log_wandb = False
+        if args.wandb:
+            run = wandb.init()
+            self.logger.write('wandb url: {}'.format(run.get_url()))
+            self.log_wandb = True
             
     def create_model(self):
         assert self.args.net in NETWORKS, f'Network {self.args.net} is not available'
@@ -287,7 +284,7 @@ class Trainer:
                 batch = data_utils.shard(batch)
                 self.state, metrics = self.p_train_step(self.state, batch)
 
-                if self.main_thread and (step+1) % self.args.log_interval == 0:
+                if (step+1) % self.args.log_interval == 0:
                     if self.log_wandb:
                         wandb.log({'step': step+1, 'train loss': metrics['loss']})
                     train_metrics.append(metrics)
@@ -297,19 +294,18 @@ class Trainer:
             train_summary = {f'train {k}': v for k, v in jax.tree_map(lambda x: x.mean(), train_metrics).items()}
             train_summary['epoch time'] = time.time() - train_last_t
             
-            if self.main_thread:
-                print('train epoch: {:3d} | {}'.format(epoch, ' | '.join(['{}: {:.4f}'.format(k, v) for k, v in train_summary.items()]))) 
-                if self.log_wandb:
-                    wandb.log({'epoch': epoch, **{k: v for k, v in train_summary.items() if k != 'train loss'}})
-            
-                if train_summary['train accuracy'] > self.best_train:
-                    self.logger.print('Train accuracy improved from {:.4f} -> {:.4f}'.format(
-                        self.best_train, train_summary['train accuracy']), 'train'
-                    )
-                    self.best_train = train_summary['train accuracy']
+            print('train epoch: {:3d} | {}'.format(epoch, ' | '.join(['{}: {:.4f}'.format(k, v) for k, v in train_summary.items()]))) 
+            if self.log_wandb:
+                wandb.log({'epoch': epoch, **{k: v for k, v in train_summary.items() if k != 'train loss'}})
+        
+            if train_summary['train accuracy'] > self.best_train:
+                self.logger.print('Train accuracy improved from {:.4f} -> {:.4f}'.format(
+                    self.best_train, train_summary['train accuracy']), 'train'
+                )
+                self.best_train = train_summary['train accuracy']
             
             # Evaluation loop
-            if self.main_thread and epoch % self.args.eval_every == 0 or epoch == self.args.epochs:
+            if epoch % self.args.eval_every == 0 or epoch == self.args.epochs:
                 print()
                 self.state = self.sync_batch_stats(self.state)
                 
