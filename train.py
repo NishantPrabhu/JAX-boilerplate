@@ -111,8 +111,12 @@ class Trainer:
             raise ValueError(f'Dataset {args.data_name} is not available')
         
         global_batch_size = args.batch_size * jax.local_device_count()
-        self.train_loader = data_utils.JaxDataLoader(train_dset, batch_size=global_batch_size, shuffle=True, num_workers=args.n_workers)
-        self.val_loader = data_utils.JaxDataLoader(val_dset, batch_size=global_batch_size, shuffle=False, num_workers=args.n_workers)
+        self.train_loader = data_utils.JaxDataLoader(
+            train_dset, batch_size=global_batch_size, shuffle=True, drop_last=True, num_workers=args.n_workers
+        )
+        self.val_loader = data_utils.JaxDataLoader(
+            val_dset, batch_size=global_batch_size, shuffle=False, drop_last=False, num_workers=args.n_workers
+        )
         
         if args.lr_sched == 'cosine':
             self.lr_func = lr_schedulers.cosine_lr_schedule(
@@ -266,8 +270,8 @@ class Trainer:
     
     def save(self):
         state = jax.device_get(jax.tree_map(lambda x: x[0], self.state))
-        step = int(self.state.step)
-        checkpoints.save_checkpoint(self.out_dir, self.state, step, keep=3)
+        step = int(state.step)
+        checkpoints.save_checkpoint(self.out_dir, state, step, keep=3)
             
     def load(self, out_dir):
         checkpoints.restore_checkpoint(out_dir, self.state)
