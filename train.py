@@ -115,6 +115,8 @@ class Trainer:
         self.val_loader = data_utils.JaxDataLoader(
             val_dset, batch_size=global_batch_size, shuffle=False, drop_last=False, num_workers=args.n_workers
         )
+        self.train_loader = jax_utils.prefetch_to_device(self.train_loader, 2)
+        self.val_loader = jax_utils.prefetch_to_device(self.val_loader, 2)
         
         if args.lr_sched == 'cosine':
             self.lr_func = lr_schedulers.cosine_lr_schedule(
