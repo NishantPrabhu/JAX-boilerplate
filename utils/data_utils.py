@@ -89,8 +89,8 @@ def shard(imgs, labels):
     imgs = imgs.reshape(jax.local_device_count(), -1, *imgs.shape[1:])
     labels = labels.reshape(jax.local_device_count(), -1, *labels.shape[1:])
     return (
-        jax.device_put([imgs], jax.local_devices()),
-        jax.device_put([labels], jax.local_devices())
+        jax.device_put_shards(list(imgs), jax.local_devices()),
+        jax.device_put_shards(list(labels), jax.local_devices())
     )
 
 def shard_new(loader):
