@@ -43,11 +43,11 @@ class CachedDataset(datasets.ImageFolder):
         self.cache = {}
         
     def __getitem__(self, idx):
-        if len(self.cache) == len(self.img_paths):
+        if idx in self.cache:
             img, label = self.cache[idx]
         else:
             img, label = self.imgs[idx]
-            self.img_cache[idx] = (img, label)
+            self.cache[idx] = (img, label)
         return self.transform(img), label
 
 
