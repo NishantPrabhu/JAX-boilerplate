@@ -46,7 +46,8 @@ class CachedDataset(datasets.ImageFolder):
         if idx in self.cache:
             img, label = self.cache[idx]
         else:
-            img, label = self.samples[idx]
+            path, label = self.samples[idx]
+            img = Image.open(path).convert('RGB')
             self.cache[idx] = (img, label)
         return self.transform(img), label
 
