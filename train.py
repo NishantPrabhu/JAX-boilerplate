@@ -162,7 +162,7 @@ class Trainer:
             model = NETWORKS[self.args.net](
                 num_classes=self.n_classes, 
                 dtype=self.dtype,
-                pre_conv=self.args.pre_conv
+                pre_conv=self.args.reduce_preconv
             )
         else:
             raise NotImplementedError()
