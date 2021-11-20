@@ -101,8 +101,8 @@ class Trainer:
                 data_utils.ToArray(),
                 data_utils.ArrayNormalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225))
             ])
-            train_dset = datasets.ImageFolder(root=os.path.join(args.data_root, 'train'), transform=train_transform)
-            val_dset = datasets.ImageFolder(root=os.path.join(args.data_root, 'val'), transform=val_transform)
+            train_dset = data_utils.CachedDataset(root=os.path.join(args.data_root, 'train'), transform=train_transform)
+            val_dset = data_utils.CachedDataset(root=os.path.join(args.data_root, 'val'), transform=val_transform)
             self.n_classes = 1000
             
         else:
@@ -280,7 +280,8 @@ class Trainer:
         for epoch in range(1, self.args.epochs+1):
             print()
             train_step = 0
-            for batch in data_utils.shard_new(self.train_loader):
+            for batch in self.train_loader:
+                batch = data_utils.shard(batch)
                 self.state, metrics = self.p_train_step(self.state, batch)
                 train_step += 1
                 
@@ -313,7 +314,8 @@ class Trainer:
                 val_step = 0
                 self.state = self.sync_batch_stats(self.state)
                 
-                for batch in data_utils.shard_new(self.val_loader):
+                for batch in self.val_loader:
+                    batch = data_utils.shard(batch)
                     metrics = self.p_eval_step(self.state, batch)
                     val_step += 1
                     val_metrics.append(metrics)

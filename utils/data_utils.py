@@ -1,8 +1,10 @@
 
+import os
 import jax
 import torch
 import numpy as np
 import jax.numpy as jnp
+from PIL import Image
 from torchvision import datasets, transforms
 from torch.utils.data import Dataset, DataLoader
 
@@ -34,6 +36,36 @@ class ArrayNormalize:
         return x
     
     
+class CachedDataset(Dataset):
+    
+    def __init__(self, root, transform):
+        super(CachedDataset, self).__init__()
+        self.root = root
+        self.transform = transform
+        self.im_paths, self.labels = self.collect_paths_and_labels()    
+        self.cache = {}
+        
+    def collect_paths_and_labels(self):
+        im_paths, labels = [], []
+        for folder in os.listdir(self.root):
+            for file in os.path.join(self.root, folder):
+                im_paths.append(os.path.join(self.root, folder, file))
+                labels.append(int(folder))
+        return im_paths. labels 
+    
+    def __len__(self):
+        return len(self.im_paths)
+    
+    def __getitem__(self, idx):
+        if len(self.cache) == len(self.img_paths):
+            img, label = self.cache[idx]
+        else:
+            img = Image.open(self.im_paths[idx]).convert('RGB')
+            label = self.labels[idx]
+            self.img_cache[idx] = (img, label)
+        return self.transform(img), label
+
+
 class JaxDataLoader(DataLoader):
     
     def __init__(
