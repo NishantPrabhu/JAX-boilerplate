@@ -85,11 +85,12 @@ def jax_collate(batch):
     imgs, targets = zip(*batch)
     return np.stack(imgs), np.array(targets)
     
-def shard(xs):
-    xs = jax.tree_map(lambda x: x.reshape((jax.local_device_count(), -1) + x.shape[1:]) if len(x.shape) != 0 else x, xs)
+def shard(imgs, labels):
+    imgs = imgs.reshape(jax.local_device_count(), -1, *imgs.shape[1:])
+    labels = labels.reshape(jax.local_device_count(), -1, *labels.shape[1:])
     return (
-        jax.device_put(xs[0], jax.local_devices()),
-        jax.device_put(xs[1], jax.local_devices())
+        jax.device_put(imgs, jax.local_devices()),
+        jax.device_put(labels, jax.local_devices())
     )
 
 def shard_new(loader):
