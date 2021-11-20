@@ -280,8 +280,8 @@ class Trainer:
         for epoch in range(1, self.args.epochs+1):
             print()
             train_step = 0
-            for batch in self.train_loader:
-                batch = data_utils.shard(batch)
+            for img, labels in self.train_loader:
+                batch = data_utils.shard(img, labels)
                 self.state, metrics = self.p_train_step(self.state, batch)
                 train_step += 1
                 
@@ -314,10 +314,11 @@ class Trainer:
                 val_step = 0
                 self.state = self.sync_batch_stats(self.state)
                 
-                for batch in self.val_loader:
-                    batch = data_utils.shard(batch)
+                for img, labels in self.val_loader:
+                    batch = data_utils.shard(img, labels)
                     metrics = self.p_eval_step(self.state, batch)
                     val_step += 1
+                    
                     val_metrics.append(metrics)
                     expt_utils.progress_bar((val_step+1)/len(self.val_loader), desc='eval  progress')
                 print()
