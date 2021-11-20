@@ -83,4 +83,7 @@ def shard_new(loader):
         label_shards.append(labels)
         if len(img_shards) % jax.local_device_count() == 0:
             dont_empty = False
-            yield jnp.stack(img_shards, 0), jnp.stack(label_shards, 0)
+            yield (
+                jax.device_put_sharded([np.stack(img_shards, 0)], jax.local_devices()), 
+                jax.device_put_sharded([np.stack(label_shards, 0)], jax.local_devices()), 
+            )

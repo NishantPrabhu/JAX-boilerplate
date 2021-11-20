@@ -354,7 +354,7 @@ if __name__ == '__main__':
     ap.add_argument('--half_precision', action='store_true', help='float16 precision training')
     
     ap.add_argument('--net', default='resnet18', type=str, help='model architecture')
-    ap.add_argument('--pre_conv', action='store_true', help='reduced or full preconv for resnet')
+    ap.add_argument('--reduce_preconv', action='store_true', help='reduced or full preconv for resnet')
     ap.add_argument('--input_size', default=32, type=int, help='image shape')
     
     ap.add_argument('--lr_sched', default='cosine', type=str, help='learning rate scheduler type')
