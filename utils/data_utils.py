@@ -83,30 +83,12 @@ class JaxDataLoader(DataLoader):
         
 def jax_collate(batch):
     imgs, targets = zip(*batch)
-    return np.stack(imgs), np.array(targets)
+    imgs, targets = np.stack(imgs), np.stack(targets)
+    imgs = imgs.reshape(jax.local_device_count(), -1, *imgs.shape[1:])
+    targets = targets.reshape(jax.local_device_count(), -1, *targets.shape[1:])
+    return imgs, targets
     
 def shard(imgs, labels):
     imgs = imgs.reshape(jax.local_device_count(), -1, *imgs.shape[1:])
     labels = labels.reshape(jax.local_device_count(), -1, *labels.shape[1:])
-    return (
-        jax.device_put_sharded(list(imgs), jax.local_devices()),
-        jax.device_put_sharded(list(labels), jax.local_devices())
-    )
-
-def shard_new(loader):
-    img_shards, label_shards = [], []
-    dont_empty = True
-    
-    for imgs, labels in loader:
-        if len(img_shards) > 0 and not dont_empty:
-            img_shards, label_shards = [], []
-            dont_empty = True
-        
-        img_shards.append(imgs)
-        label_shards.append(labels)
-        if len(img_shards) % jax.local_device_count() == 0:
-            dont_empty = False
-            yield (
-                jax.device_put_sharded(img_shards, jax.local_devices()), 
-                jax.device_put_sharded(label_shards, jax.local_devices()), 
-            )
+    return list(imgs), list(labels)
