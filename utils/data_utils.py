@@ -83,12 +83,14 @@ class JaxDataLoader(DataLoader):
         
 def jax_collate(batch):
     imgs, targets = zip(*batch)
-    imgs, targets = np.stack(imgs), np.stack(targets)
-    imgs = imgs.reshape(jax.local_device_count(), -1, *imgs.shape[1:])
-    targets = targets.reshape(jax.local_device_count(), -1, *targets.shape[1:])
-    return imgs, targets
+    return np.stack(imgs), np.stack(targets)
     
-def shard(imgs, labels):
+    
+def shard(batch):
+    imgs, labels = batch
     imgs = imgs.reshape(jax.local_device_count(), -1, *imgs.shape[1:])
     labels = labels.reshape(jax.local_device_count(), -1, *labels.shape[1:])
-    return list(imgs), list(labels)
+    return (
+        jax.device_put_sharded(list(imgs), jax.local_devices()),
+        jax.device_put_sharded(list(labels), jax.local_devices())
+    )

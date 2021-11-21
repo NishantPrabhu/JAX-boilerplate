@@ -115,8 +115,6 @@ class Trainer:
         self.val_loader = data_utils.JaxDataLoader(
             val_dset, batch_size=args.batch_size, shuffle=False, drop_last=False, num_workers=args.n_workers
         )
-        self.train_loader_size = len(self.train_loader)
-        self.val_loader_size = len(self.val_loader)
         
         if args.lr_sched == 'cosine':
             self.lr_func = lr_schedulers.cosine_lr_schedule(
@@ -156,10 +154,6 @@ class Trainer:
             self.logger.write('wandb url: {}'.format(run.get_url()))
             self.log_wandb = True
             
-        # Experimental
-        self.train_loader = jax_utils.prefetch_to_device(self.train_loader, 2)
-        self.val_loader = jax_utils.prefetch_to_device(self.val_loader, 2) 
-    
     def create_model(self):
         assert self.args.net in NETWORKS, f'Network {self.args.net} is not available'
         platform = jax.local_devices()[0].platform 
@@ -285,14 +279,15 @@ class Trainer:
         
         for epoch in range(1, self.args.epochs+1):
             print()
-            for step, batch in zip(range(self.train_loader_size), self.train_loader):
+            for step, batch in enumerate(self.train_loader):
+                batch = data_utils.shard(batch)
                 self.state, metrics = self.p_train_step(self.state, batch)
                 
                 if (step+1) % self.args.log_interval == 0:
                     if self.log_wandb:
                         wandb.log({'step': step+1, 'train loss': metrics['loss']})
                     train_metrics.append(metrics)
-                    expt_utils.progress_bar((step+1)/self.train_loader_size, desc='train progress')
+                    expt_utils.progress_bar((step+1)/len(self.train_loader), desc='train progress')
             print()
             train_metrics = common_utils.get_metrics(train_metrics)
             train_summary = {f'train {k}': v for k, v in jax.tree_map(lambda x: x.mean(), train_metrics).items()}
@@ -316,10 +311,11 @@ class Trainer:
                 print()
                 self.state = self.sync_batch_stats(self.state)
                 
-                for step, batch in zip(range(self.val_loader_size), self.val_loader):
+                for step, batch in enumerate(self.val_loader):
+                    batch = data_utils.shard(batch)
                     metrics = self.p_eval_step(self.state, batch)                    
                     val_metrics.append(metrics)
-                    expt_utils.progress_bar((step+1)/self.val_loader_size, desc='eval  progress')
+                    expt_utils.progress_bar((step+1)/len(self.val_loader), desc='eval  progress')
                 print()
                 val_metrics = common_utils.get_metrics(val_metrics)
                 val_summary = {f'val {k}': v for k, v in jax.tree_map(lambda x: x.mean(), val_metrics).items()}
